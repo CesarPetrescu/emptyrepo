@@ -1,0 +1,87 @@
+name: Health Week v0.3 runner 2
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Reconstruct source and apply compile fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/healthweek"
+          cat ci/healthweek-v03/source.xz.b64.* \
+            | tr -d '\r\n\t ' \
+            | base64 --decode \
+            > "$RUNNER_TEMP/healthweek-source.tar.xz"
+          echo '6c90d5ecdbead3ba95936f7a399618e572d331e5dbcb0a9c5e7c5ba47fb863f2  '"$RUNNER_TEMP/healthweek-source.tar.xz" \
+            | sha256sum --check --strict -
+          tar -xJf "$RUNNER_TEMP/healthweek-source.tar.xz" -C "$RUNNER_TEMP/healthweek"
+          chmod +x "$RUNNER_TEMP/healthweek/gradlew"
+          find "$RUNNER_TEMP/healthweek/app/src/main/java" -name '*.kt' -print0 \
+            | xargs -0 sed -i '/^import androidx\.compose\.foundation\.layout\.weight$/d'
+
+      - name: Restore Samsung Health Data SDK
+        working-directory: ${{ runner.temp }}/healthweek
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/libs
+          curl --fail --location --retry 4 --retry-all-errors \
+            -o app/libs/samsung-health-data-api-1.1.0.aar \
+            https://raw.githubusercontent.com/S108-Sleeper/Sleeper_APP/b15fa77b9f296bb1c9e50ee54f786d11b67fdd0b/App/core/samsung-health/libs/samsung-health-data-api-1.1.0.aar
+          echo 'f5d3d83cf00b97d0bb1b1db4da076e861eb1c3e6e704d89a34e68909d2f38654  app/libs/samsung-health-data-api-1.1.0.aar' \
+            | sha256sum --check --strict -
+
+      - name: Test and build
+        working-directory: ${{ runner.temp }}/healthweek
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --stacktrace --no-daemon
+
+      - name: Package artifact
+        working-directory: ${{ runner.temp }}/healthweek
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          test -f "$APK"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          mkdir -p artifact
+          "$BT/zipalign" -p -f 4 "$APK" artifact/HealthWeek-v0.3.0-unsigned.apk
+          "$BT/zipalign" -c -v 4 artifact/HealthWeek-v0.3.0-unsigned.apk > artifact/zipalign.txt
+          "$BT/aapt" dump badging artifact/HealthWeek-v0.3.0-unsigned.apk > artifact/aapt-badging.txt
+          unzip -t artifact/HealthWeek-v0.3.0-unsigned.apk > artifact/zip-integrity.txt
+          sha256sum artifact/HealthWeek-v0.3.0-unsigned.apk > artifact/HealthWeek-v0.3.0-unsigned.apk.sha256
+          cp "$BT/zipalign" artifact/zipalign
+          cp "$BT/lib/apksigner.jar" artifact/apksigner.jar
+          cp -r app/build/reports/tests/testDebugUnitTest artifact/unit-tests
+          zip -qr artifact/HealthWeek-v0.3.0-source.zip . \
+            -x 'app/libs/*.aar' 'app/build/*' '.gradle/*' 'artifact/*'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HealthWeek-v0.3.0-unsigned-build-run2
+          path: ${{ runner.temp }}/healthweek/artifact/*
+          if-no-files-found: error
+          retention-days: 1
