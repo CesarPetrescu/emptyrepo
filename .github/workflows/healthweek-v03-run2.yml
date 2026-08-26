@@ -1,6 +1,6 @@
 name: Health Week v0.3 runner 2
 
-on: push
+on: [push, pull_request]
 
 permissions:
   contents: read
