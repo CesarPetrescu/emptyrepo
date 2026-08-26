@@ -65,6 +65,47 @@ jobs:
           }
           JSON
 
+          python3 - "$PROJECT" <<'PY'
+          from pathlib import Path
+          import sys
+
+          project = Path(sys.argv[1])
+
+          api = project / "app/src/main/java/com/photonspark/galaxyhealthweek/server/HealthApiService.kt"
+          source = api.read_text()
+          old = "days = selected.map(DailyHealth::toSummaryDto),"
+          new = "days = selected.map { it.toSummaryDto() },"
+          if old not in source:
+              raise SystemExit("HealthApiService member-extension patch target not found")
+          api.write_text(source.replace(old, new))
+
+          server = project / "app/src/main/java/com/photonspark/galaxyhealthweek/server/HealthDashboardServer.kt"
+          source = server.read_text()
+          old = '''        val assetPath = "web/$normalized"
+          val bytes = runCatching { appContext.assets.open(assetPath).use { it.readBytes() } }
+              .getOrNull()
+              ?: if (!normalized.contains('.')) {
+                  runCatching { appContext.assets.open("web/index.html").use { it.readBytes() } }.getOrNull()
+              } else null
+              ?: return HttpResponse.json(404, ErrorResponse("Page not found."), gson)
+          '''
+          new = '''        val assetPath = "web/$normalized"
+          val requestedBytes = runCatching { appContext.assets.open(assetPath).use { it.readBytes() } }
+              .getOrNull()
+          val fallbackBytes = if (requestedBytes == null && !normalized.contains('.')) {
+              runCatching { appContext.assets.open("web/index.html").use { it.readBytes() } }.getOrNull()
+          } else {
+              null
+          }
+          val bytes: ByteArray = requestedBytes
+              ?: fallbackBytes
+              ?: return HttpResponse.json(404, ErrorResponse("Page not found."), gson)
+          '''
+          if old not in source:
+              raise SystemExit("HealthDashboardServer nullable asset patch target not found")
+          server.write_text(source.replace(old, new))
+          PY
+
       - name: Restore Samsung Health SDK
         working-directory: ${{ runner.temp }}/healthweek-v04
         shell: bash
