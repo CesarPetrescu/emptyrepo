@@ -82,11 +82,11 @@ jobs:
           server = project / "app/src/main/java/com/photonspark/galaxyhealthweek/server/HealthDashboardServer.kt"
           source = server.read_text()
           start_marker = '        val assetPath = "web/$normalized"\n'
-          end_marker = '        val response = HttpResponse(\n'
+          end_marker = '        return HttpResponse(\n'
           start = source.find(start_marker)
           end = source.find(end_marker, start)
           if start < 0 or end < 0:
-              raise SystemExit("HealthDashboardServer asset block markers not found")
+              raise SystemExit(f"HealthDashboardServer asset block markers not found: start={start}, end={end}")
           replacement = '''        val assetPath = "web/$normalized"
           val requestedBytes = runCatching { appContext.assets.open(assetPath).use { it.readBytes() } }
               .getOrNull()
