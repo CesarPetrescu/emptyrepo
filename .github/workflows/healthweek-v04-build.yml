@@ -1,0 +1,180 @@
+name: Build Health Week v0.4
+
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Reconstruct source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$RUNNER_TEMP/healthweek-v04"
+          ARCHIVE="$RUNNER_TEMP/healthweek-v04-src.tar.xz"
+          rm -rf "$PROJECT"
+          mkdir -p "$PROJECT"
+          cat ci/healthweek-v04/source.xz.b64.* \
+            | tr -d '\r\n\t ' \
+            | base64 --decode \
+            > "$ARCHIVE"
+          printf '%s  %s\n' \
+            '54a8c080e9e361f9cf3e09933244477423f89179c74ec5ba2b83dfa1b824a4ab' \
+            "$ARCHIVE" \
+            | sha256sum --check --strict -
+          tar -tJf "$ARCHIVE" >/dev/null
+          tar -xJf "$ARCHIVE" -C "$PROJECT"
+          chmod +x "$PROJECT/gradlew" "$PROJECT/desktop-pwa/run.sh"
+          test ! -e "$PROJECT/signing.properties"
+          test ! -e "$PROJECT/healthweek-release.p12"
+
+      - name: Restore pinned Samsung Health Data SDK AAR
+        working-directory: ${{ runner.temp }}/healthweek-v04
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/libs
+          curl --fail --location --retry 4 --retry-all-errors \
+            -o app/libs/samsung-health-data-api-1.1.0.aar \
+            https://raw.githubusercontent.com/S108-Sleeper/Sleeper_APP/b15fa77b9f296bb1c9e50ee54f786d11b67fdd0b/App/core/samsung-health/libs/samsung-health-data-api-1.1.0.aar
+          printf '%s  %s\n' \
+            'f5d3d83cf00b97d0bb1b1db4da076e861eb1c3e6e704d89a34e68909d2f38654' \
+            'app/libs/samsung-health-data-api-1.1.0.aar' \
+            | sha256sum --check --strict -
+
+      - name: Validate desktop PWA JavaScript
+        working-directory: ${{ runner.temp }}/healthweek-v04
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check app/src/main/assets/web/assets/app.js
+          node --check desktop-pwa/assets/app.js
+          diff -u app/src/main/assets/web/index.html desktop-pwa/index.html
+          diff -u app/src/main/assets/web/assets/app.js desktop-pwa/assets/app.js
+          diff -u app/src/main/assets/web/assets/styles.css desktop-pwa/assets/styles.css
+
+      - name: Build and package Even Realities G2 app
+        working-directory: ${{ runner.temp }}/healthweek-v04/even-g2
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npm run build
+          npx evenhub pack app.json dist -o HealthWeek-G2-v0.4.0.ehpk
+          test -s HealthWeek-G2-v0.4.0.ehpk
+
+      - name: Test and build Android phone and Wear OS apps
+        working-directory: ${{ runner.temp }}/healthweek-v04
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew \
+            :app:testDebugUnitTest \
+            :app:assembleRelease \
+            :wear:assembleRelease \
+            --stacktrace \
+            --no-daemon
+
+      - name: Android lint diagnostics
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}/healthweek-v04
+        shell: bash
+        run: |
+          ./gradlew :app:lintRelease :wear:lintRelease --stacktrace --no-daemon
+
+      - name: Validate and package artifacts
+        working-directory: ${{ runner.temp }}/healthweek-v04
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          OUT="$RUNNER_TEMP/healthweek-v04-artifact"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          PHONE_APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          WEAR_APK="$(find wear/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          test -f "$PHONE_APK"
+          test -f "$WEAR_APK"
+
+          "$BT/zipalign" -p -f 4 "$PHONE_APK" "$OUT/HealthWeek-v0.4.0-unsigned.apk"
+          "$BT/zipalign" -p -f 4 "$WEAR_APK" "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk"
+          "$BT/zipalign" -c -v 4 "$OUT/HealthWeek-v0.4.0-unsigned.apk" > "$OUT/phone-zipalign.txt"
+          "$BT/zipalign" -c -v 4 "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk" > "$OUT/wear-zipalign.txt"
+          "$BT/aapt" dump badging "$OUT/HealthWeek-v0.4.0-unsigned.apk" > "$OUT/phone-aapt-badging.txt"
+          "$BT/aapt" dump badging "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk" > "$OUT/wear-aapt-badging.txt"
+          unzip -t "$OUT/HealthWeek-v0.4.0-unsigned.apk" > "$OUT/phone-zip-integrity.txt"
+          unzip -t "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk" > "$OUT/wear-zip-integrity.txt"
+          sha256sum "$OUT/HealthWeek-v0.4.0-unsigned.apk" > "$OUT/HealthWeek-v0.4.0-unsigned.apk.sha256"
+          sha256sum "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk" > "$OUT/HealthWeek-Wear-v0.4.0-unsigned.apk.sha256"
+
+          cp "$BT/zipalign" "$OUT/zipalign"
+          cp "$BT/lib/apksigner.jar" "$OUT/apksigner.jar"
+          cp even-g2/HealthWeek-G2-v0.4.0.ehpk "$OUT/"
+          sha256sum "$OUT/HealthWeek-G2-v0.4.0.ehpk" > "$OUT/HealthWeek-G2-v0.4.0.ehpk.sha256"
+
+          (
+            cd desktop-pwa
+            zip -qr "$OUT/HealthWeek-Desktop-PWA-v0.4.0.zip" .
+          )
+          sha256sum "$OUT/HealthWeek-Desktop-PWA-v0.4.0.zip" > "$OUT/HealthWeek-Desktop-PWA-v0.4.0.zip.sha256"
+
+          (
+            cd "$RUNNER_TEMP/healthweek-v04"
+            zip -qr "$OUT/HealthWeek-v0.4.0-source.zip" . \
+              -x 'app/libs/*.aar' \
+              -x 'app/build/*' \
+              -x 'wear/build/*' \
+              -x '.gradle/*' \
+              -x 'even-g2/node_modules/*' \
+              -x 'even-g2/dist/*' \
+              -x 'even-g2/*.ehpk' \
+              -x 'signing.properties' \
+              -x '*.p12' \
+              -x '*.jks' \
+              -x '*.keystore'
+          )
+          sha256sum "$OUT/HealthWeek-v0.4.0-source.zip" > "$OUT/HealthWeek-v0.4.0-source.zip.sha256"
+
+          cp -r app/build/reports/tests/testDebugUnitTest "$OUT/phone-unit-tests" || true
+          cp app/build/reports/lint-results-release.html "$OUT/phone-lint-release.html" || true
+          cp app/build/reports/lint-results-release.xml "$OUT/phone-lint-release.xml" || true
+          cp wear/build/reports/lint-results-release.html "$OUT/wear-lint-release.html" || true
+          cp wear/build/reports/lint-results-release.xml "$OUT/wear-lint-release.xml" || true
+
+      - name: Upload build package
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthWeek-v0.4.0-multitarget-build
+          path: ${{ runner.temp }}/healthweek-v04-artifact/*
+          if-no-files-found: error
+          retention-days: 1
