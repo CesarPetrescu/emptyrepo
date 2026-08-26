@@ -81,15 +81,13 @@ jobs:
 
           server = project / "app/src/main/java/com/photonspark/galaxyhealthweek/server/HealthDashboardServer.kt"
           source = server.read_text()
-          old = '''        val assetPath = "web/$normalized"
-          val bytes = runCatching { appContext.assets.open(assetPath).use { it.readBytes() } }
-              .getOrNull()
-              ?: if (!normalized.contains('.')) {
-                  runCatching { appContext.assets.open("web/index.html").use { it.readBytes() } }.getOrNull()
-              } else null
-              ?: return HttpResponse.json(404, ErrorResponse("Page not found."), gson)
-          '''
-          new = '''        val assetPath = "web/$normalized"
+          start_marker = '        val assetPath = "web/$normalized"\n'
+          end_marker = '        val response = HttpResponse(\n'
+          start = source.find(start_marker)
+          end = source.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("HealthDashboardServer asset block markers not found")
+          replacement = '''        val assetPath = "web/$normalized"
           val requestedBytes = runCatching { appContext.assets.open(assetPath).use { it.readBytes() } }
               .getOrNull()
           val fallbackBytes = if (requestedBytes == null && !normalized.contains('.')) {
@@ -100,10 +98,9 @@ jobs:
           val bytes: ByteArray = requestedBytes
               ?: fallbackBytes
               ?: return HttpResponse.json(404, ErrorResponse("Page not found."), gson)
+
           '''
-          if old not in source:
-              raise SystemExit("HealthDashboardServer nullable asset patch target not found")
-          server.write_text(source.replace(old, new))
+          server.write_text(source[:start] + replacement + source[end:])
           PY
 
       - name: Restore Samsung Health SDK
