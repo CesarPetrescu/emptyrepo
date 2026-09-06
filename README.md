@@ -15,14 +15,13 @@ Every asset is exported as **GLB** and **FBX**, rendered to a preview image, mea
 
 ## Viewer
 
-After the first workflow completes:
-
-- GitHub Pages: `https://cesarpetrescu.github.io/emptyrepo/`
-- Immediate static preview: `https://raw.githack.com/CesarPetrescu/emptyrepo/main/dist/index.html`
+- Live immutable mirror: `https://rawcdn.githack.com/CesarPetrescu/emptyrepo/eae6ce24fd7d230e3fed6e8acf21463409273dcf/dist/index.html`
+- Development mirror: `https://raw.githack.com/CesarPetrescu/emptyrepo/main/dist/index.html`
+- Optional GitHub Pages URL after enabling **Settings → Pages → GitHub Actions**: `https://cesarpetrescu.github.io/emptyrepo/`
 
 ## Rebuild
 
-The GitHub Actions workflow downloads and verifies Blender 5.2.1, runs `blender/generate_assets.py` headlessly, validates all outputs, creates a ZIP bundle, commits the generated `dist/` directory, and attempts a GitHub Pages deployment.
+The GitHub Actions workflow downloads and verifies Blender 5.2.1 against Blender's official checksum manifest, runs `blender/generate_assets.py` headlessly, validates all outputs, creates a ZIP bundle, commits the generated `dist/` directory, and prepares a GitHub Pages deployment artifact.
 
 ```bash
 ASSET_OUT="$PWD/dist" blender --background --factory-startup --python blender/generate_assets.py
