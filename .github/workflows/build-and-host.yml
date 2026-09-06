@@ -1,0 +1,176 @@
+name: Build Blender assets and host gallery
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: roblox-asset-forge
+  cancel-in-progress: true
+
+env:
+  BLENDER_VERSION: "5.2.1"
+  BLENDER_ARCHIVE: "blender-5.2.1-linux-x64.tar.xz"
+  BLENDER_SHA256: "cecc8e79878ba953ead19dcc04a531b96c5bd297595902f7f307f4ebcf46fb10"
+
+jobs:
+  build:
+    name: Generate assets with Blender 5.2.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat payload/part-*.b64 | base64 --decode > source-payload.tar.gz
+          echo "0b078abced535c0d1f73cde37d24611f3a8b6c339bf8eb89d8d53bcbc832a8d8  source-payload.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file source-payload.tar.gz
+          rm source-payload.tar.gz
+
+      - name: Install runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl xz-utils zip \
+            libegl1 libgl1 libice6 libsm6 libx11-6 libxext6 libxfixes3 \
+            libxi6 libxkbcommon0 libxrender1
+
+      - name: Cache Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/blender-${{ env.BLENDER_VERSION }}
+          key: blender-linux-x64-${{ env.BLENDER_VERSION }}-${{ env.BLENDER_SHA256 }}
+
+      - name: Download and verify Blender
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .cache
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://download.blender.org/release/Blender5.2/${BLENDER_ARCHIVE}" \
+            --output ".cache/${BLENDER_ARCHIVE}"
+          echo "${BLENDER_SHA256}  .cache/${BLENDER_ARCHIVE}" | sha256sum --check --strict
+          tar --extract --file ".cache/${BLENDER_ARCHIVE}" --directory .cache
+          mv ".cache/blender-${BLENDER_VERSION}-linux-x64" ".cache/blender-${BLENDER_VERSION}"
+          rm ".cache/${BLENDER_ARCHIVE}"
+
+      - name: Verify Blender installation
+        run: .cache/blender-${BLENDER_VERSION}/blender --version
+
+      - name: Generate the pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          cp -a site/. dist/
+          ASSET_OUT="$GITHUB_WORKSPACE/dist" \
+            .cache/blender-${BLENDER_VERSION}/blender \
+            --background \
+            --factory-startup \
+            --python blender/generate_assets.py
+          touch dist/.nojekyll
+
+      - name: Validate generated outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("dist")
+          catalog = json.loads((root / "catalog.json").read_text())
+          assert len(catalog["assets"]) == 6, "expected six generated assets"
+          for asset in catalog["assets"]:
+              assert asset["stats"]["triangles"] < 20_000, f"{asset['slug']} exceeds Roblox's per-mesh budget"
+              assert all(value > 0 for value in asset["dimensionsStuds"]), f"invalid bounds for {asset['slug']}"
+              for key in ("glb", "fbx", "preview"):
+                  output = root / asset["files"][key]
+                  assert output.exists() and output.stat().st_size > 0, f"missing {output}"
+          blend = root / catalog["pack"]["sourceBlend"]
+          assert blend.exists() and blend.stat().st_size > 0, "missing Blender source pack"
+          print(json.dumps({
+              "assets": len(catalog["assets"]),
+              "triangles": sum(a["stats"]["triangles"] for a in catalog["assets"]),
+              "blender": catalog["pack"]["blenderVersion"],
+          }, indent=2))
+          PY
+
+      - name: Package downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/downloads
+          (
+            cd dist
+            zip -9 -r downloads/neon-salvage-pack.zip \
+              assets previews source catalog.json
+          )
+          sha256sum dist/assets/* dist/source/* dist/downloads/* > dist/SHA256SUMS.txt
+
+      - name: Upload generated pack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neon-salvage-roblox-assets
+          path: |
+            dist/assets
+            dist/previews
+            dist/source
+            dist/downloads
+            dist/catalog.json
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
+
+      - name: Commit generated site and binary assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf payload
+          git add --force dist blender site LICENSE .gitignore payload
+          if git diff --cached --quiet; then
+            echo "Generated outputs are unchanged."
+          else
+            git commit -m "build: generate Blender asset gallery [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy-pages:
+    name: Deploy GitHub Pages when enabled
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy static gallery
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
