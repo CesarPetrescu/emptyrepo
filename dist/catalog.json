@@ -1,0 +1,232 @@
+{
+  "pack": {
+    "name": "Neon Salvage \u2014 Roblox Starter Pack",
+    "version": "1.0.0",
+    "description": "Six original low-poly sci-fi props generated procedurally in Blender for Roblox prototyping.",
+    "license": "CC0-1.0",
+    "generator": "blender/generate_assets.py",
+    "blenderVersion": "5.2.1 LTS",
+    "generatedAt": "2026-09-06T02:13:42.815162+00:00",
+    "studMetres": 0.28,
+    "sourceBlend": "source/neon-salvage-pack.blend",
+    "bundle": "downloads/neon-salvage-pack.zip"
+  },
+  "assets": [
+    {
+      "slug": "cargo-crate",
+      "name": "NX-4 Cargo Crate",
+      "category": "Environment",
+      "description": "A compact loot or shipping crate with readable silhouette, protected corners, and a cyan status strip.",
+      "accent": "#ff5a1f",
+      "robloxUse": [
+        "loot container",
+        "cover prop",
+        "warehouse dressing"
+      ],
+      "stats": {
+        "triangles": 1836,
+        "vertices": 952,
+        "meshObjects": 17,
+        "materials": 5
+      },
+      "dimensionsStuds": [
+        4.38,
+        4.43,
+        4.01
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Dark Steel",
+        "Energy Cyan",
+        "Navy Polymer",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/cargo-crate.glb",
+        "fbx": "assets/cargo-crate.fbx",
+        "preview": "previews/cargo-crate.png"
+      }
+    },
+    {
+      "slug": "energy-barrel",
+      "name": "Flux Energy Barrel",
+      "category": "Environment",
+      "description": "A low-poly hazardous-energy barrel suitable for objectives, destructibles, or industrial set dressing.",
+      "accent": "#00d9ff",
+      "robloxUse": [
+        "objective prop",
+        "hazard",
+        "industrial dressing"
+      ],
+      "stats": {
+        "triangles": 2140,
+        "vertices": 1092,
+        "meshObjects": 11,
+        "materials": 5
+      },
+      "dimensionsStuds": [
+        3.34,
+        3.16,
+        4.94
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Dark Steel",
+        "Energy Cyan",
+        "Navy Polymer",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/energy-barrel.glb",
+        "fbx": "assets/energy-barrel.fbx",
+        "preview": "previews/energy-barrel.png"
+      }
+    },
+    {
+      "slug": "security-gate",
+      "name": "Aegis Security Gate",
+      "category": "Architecture",
+      "description": "A modular ten-stud sci-fi doorway with split doors, access panel, and emissive navigation strips.",
+      "accent": "#ff2aa9",
+      "robloxUse": [
+        "level gate",
+        "spawn entrance",
+        "mission checkpoint"
+      ],
+      "stats": {
+        "triangles": 1296,
+        "vertices": 672,
+        "meshObjects": 12,
+        "materials": 6
+      },
+      "dimensionsStuds": [
+        10.75,
+        3.1,
+        8.09
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Dark Steel",
+        "Energy Cyan",
+        "Energy Magenta",
+        "Navy Polymer",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/security-gate.glb",
+        "fbx": "assets/security-gate.fbx",
+        "preview": "previews/security-gate.png"
+      }
+    },
+    {
+      "slug": "crystal-node",
+      "name": "Cryon Crystal Node",
+      "category": "Resource",
+      "description": "A faceted resource node with a reinforced octagonal socket and contrasting secondary crystal.",
+      "accent": "#20c7ff",
+      "robloxUse": [
+        "mining node",
+        "power source",
+        "quest objective"
+      ],
+      "stats": {
+        "triangles": 1134,
+        "vertices": 589,
+        "meshObjects": 11,
+        "materials": 6
+      },
+      "dimensionsStuds": [
+        4.27,
+        4.27,
+        5.52
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Crystal Core",
+        "Energy Cyan",
+        "Energy Magenta",
+        "Industrial Rubber",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/crystal-node.glb",
+        "fbx": "assets/crystal-node.fbx",
+        "preview": "previews/crystal-node.png"
+      }
+    },
+    {
+      "slug": "beacon-lamp",
+      "name": "Pathfinder Beacon",
+      "category": "Environment",
+      "description": "A tall navigation beacon with a protected energy core and a readable interaction/control box.",
+      "accent": "#00dbff",
+      "robloxUse": [
+        "checkpoint",
+        "path lighting",
+        "interaction marker"
+      ],
+      "stats": {
+        "triangles": 2176,
+        "vertices": 1112,
+        "meshObjects": 12,
+        "materials": 7
+      },
+      "dimensionsStuds": [
+        2.88,
+        2.88,
+        7.58
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Dark Steel",
+        "Energy Cyan",
+        "Energy Magenta",
+        "Industrial Rubber",
+        "Navy Polymer",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/beacon-lamp.glb",
+        "fbx": "assets/beacon-lamp.fbx",
+        "preview": "previews/beacon-lamp.png"
+      }
+    },
+    {
+      "slug": "hover-drone",
+      "name": "Warden Hover Drone",
+      "category": "Vehicle",
+      "description": "A static four-rotor security drone prop with a strong central eye and simple collision-friendly structure.",
+      "accent": "#ff2aa9",
+      "robloxUse": [
+        "enemy shell",
+        "companion prop",
+        "security decoration"
+      ],
+      "stats": {
+        "triangles": 4912,
+        "vertices": 2504,
+        "meshObjects": 24,
+        "materials": 7
+      },
+      "dimensionsStuds": [
+        5.17,
+        3.17,
+        2.15
+      ],
+      "materials": [
+        "Brushed Steel",
+        "Dark Steel",
+        "Energy Cyan",
+        "Energy Magenta",
+        "Industrial Rubber",
+        "Navy Polymer",
+        "Signal Orange"
+      ],
+      "files": {
+        "glb": "assets/hover-drone.glb",
+        "fbx": "assets/hover-drone.fbx",
+        "preview": "previews/hover-drone.png"
+      }
+    }
+  ]
+}
