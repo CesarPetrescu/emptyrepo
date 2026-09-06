@@ -19,7 +19,6 @@ concurrency:
 env:
   BLENDER_VERSION: "5.2.1"
   BLENDER_ARCHIVE: "blender-5.2.1-linux-x64.tar.xz"
-  BLENDER_SHA256: "cecc8e79878ba953ead19dcc04a531b96c5bd297595902f7f307f4ebcf46fb10"
 
 jobs:
   build:
@@ -55,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache/blender-${{ env.BLENDER_VERSION }}
-          key: blender-linux-x64-${{ env.BLENDER_VERSION }}-${{ env.BLENDER_SHA256 }}
+          key: blender-linux-x64-${{ env.BLENDER_VERSION }}-official-checksum-v2
 
       - name: Download and verify Blender
         if: steps.blender-cache.outputs.cache-hit != 'true'
@@ -66,10 +65,15 @@ jobs:
           curl --fail --location --retry 5 --retry-all-errors \
             "https://download.blender.org/release/Blender5.2/${BLENDER_ARCHIVE}" \
             --output ".cache/${BLENDER_ARCHIVE}"
-          echo "${BLENDER_SHA256}  .cache/${BLENDER_ARCHIVE}" | sha256sum --check --strict
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://download.blender.org/release/Blender5.2/blender-${BLENDER_VERSION}.sha256" \
+            --output ".cache/blender-${BLENDER_VERSION}.sha256"
+          expected="$(awk -v file="${BLENDER_ARCHIVE}" '$2 == file { print $1 }' ".cache/blender-${BLENDER_VERSION}.sha256")"
+          test -n "${expected}"
+          printf '%s  %s\n' "${expected}" ".cache/${BLENDER_ARCHIVE}" | sha256sum --check --strict
           tar --extract --file ".cache/${BLENDER_ARCHIVE}" --directory .cache
           mv ".cache/blender-${BLENDER_VERSION}-linux-x64" ".cache/blender-${BLENDER_VERSION}"
-          rm ".cache/${BLENDER_ARCHIVE}"
+          rm ".cache/${BLENDER_ARCHIVE}" ".cache/blender-${BLENDER_VERSION}.sha256"
 
       - name: Verify Blender installation
         run: .cache/blender-${BLENDER_VERSION}/blender --version
