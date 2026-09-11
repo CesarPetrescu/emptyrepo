@@ -87,6 +87,117 @@ jobs:
           tar -tJf "$OVERLAY" >/dev/null
           tar -xJf "$OVERLAY" -C "$PROJECT"
 
+          # Even's background-state docs describe setBackgroundState/onBackgroundRestore,
+          # but npm SDK 0.0.15 does not export them yet. Use those functions when a future
+          # SDK exposes them and fall back to the host's documented snapshot hooks today.
+          python3 - "$PROJECT" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          main = root / 'even-g2/src/main.ts'
+          s = main.read_text()
+          s = s.replace(
+              "import {\n  onBackgroundRestore,\n  setBackgroundState,\n  waitForEvenAppBridge,\n  type EvenAppBridge,\n  type EvenHubEvent,\n} from '@evenrealities/even_hub_sdk'",
+              "import {\n  waitForEvenAppBridge,\n  type EvenAppBridge,\n  type EvenHubEvent,\n} from '@evenrealities/even_hub_sdk'\nimport * as EvenSdk from '@evenrealities/even_hub_sdk'",
+          )
+          start = s.find('// Even Hub migrates the plugin between foreground and headless WebViews.')
+          end = s.find("document.querySelector('#pair')", start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate G2 background-state block')
+          block = r'''// Even Hub migrates the plugin between foreground and headless WebViews. SDK 0.0.15 does
+          // not expose the documented background helpers in its public TypeScript surface, so use them
+          // when a newer host injects them and fall back to the host snapshot hooks described by Even's
+          // background-state contract. This keeps v0.5 buildable on 0.0.15 and forward-compatible.
+          type BackgroundApi = {
+            setBackgroundState?: (key: string, exporter: () => Record<string, unknown>) => void
+            onBackgroundRestore?: (key: string, restorer: (saved: Record<string, unknown>) => void) => void
+          }
+
+          type HostStateWindow = Window & {
+            __getStateSnapshot?: () => string
+            __restoreState?: (snapshot: string) => void
+          }
+
+          const exportRuntimeState = (): PersistedState => ({
+            pageIndex,
+            data,
+            etag,
+            lastFetchAt,
+            token: settings.token,
+            clientId: settings.clientId,
+          })
+
+          function restoreRuntimeState(saved: Partial<PersistedState>) {
+            pageIndex = normalizePage(saved.pageIndex ?? pageIndex)
+            data = saved.data ?? data
+            etag = saved.etag ?? etag
+            lastFetchAt = saved.lastFetchAt ?? lastFetchAt
+            settings = {
+              ...settings,
+              token: saved.token ?? settings.token,
+              clientId: saved.clientId ?? settings.clientId,
+            }
+            persistAll()
+            renderPhonePreview()
+            void renderGlasses()
+          }
+
+          function registerBackgroundPersistence() {
+            const backgroundApi = EvenSdk as unknown as BackgroundApi
+            if (backgroundApi.setBackgroundState && backgroundApi.onBackgroundRestore) {
+              backgroundApi.setBackgroundState(BACKGROUND_KEY, () => ({ ...exportRuntimeState() }))
+              backgroundApi.onBackgroundRestore(BACKGROUND_KEY, (saved: Record<string, unknown>) => {
+                restoreRuntimeState(saved as Partial<PersistedState>)
+              })
+              return
+            }
+
+            const host = window as HostStateWindow
+            const previousGet = host.__getStateSnapshot?.bind(host)
+            const previousRestore = host.__restoreState?.bind(host)
+
+            host.__getStateSnapshot = () => {
+              let rootState: Record<string, unknown> = {}
+              if (previousGet) {
+                try {
+                  const previous = JSON.parse(previousGet()) as Record<string, unknown>
+                  rootState = { ...previous }
+                } catch {
+                  // A previous hook did not return JSON. Health Week can still export its state.
+                }
+              }
+              rootState[BACKGROUND_KEY] = exportRuntimeState()
+              return JSON.stringify(rootState)
+            }
+
+            host.__restoreState = (snapshot: string) => {
+              previousRestore?.(snapshot)
+              try {
+                const rootState = JSON.parse(snapshot) as Record<string, unknown>
+                const saved = rootState[BACKGROUND_KEY]
+                if (saved && typeof saved === 'object') {
+                  restoreRuntimeState(saved as Partial<PersistedState>)
+                }
+              } catch (error) {
+                console.warn('Could not restore Health Week G2 background state:', error)
+              }
+            }
+          }
+
+          registerBackgroundPersistence()
+
+          '''
+          main.write_text(s[:start] + block + s[end:])
+
+          app_json = root / 'even-g2/app.json'
+          manifest = json.loads(app_json.read_text())
+          manifest['min_app_version'] = '2.2.10'
+          manifest['min_sdk_version'] = '0.0.15'
+          app_json.write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+
           chmod +x "$PROJECT/gradlew"
           [[ -f "$PROJECT/desktop-pwa/run.sh" ]] && chmod +x "$PROJECT/desktop-pwa/run.sh"
           rm -f "$PROJECT/even-g2/package-lock.json"
