@@ -1,0 +1,139 @@
+name: Build Health Week v0.5 final 4
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ci/healthweek-v05-final/**'
+      - '.github/workflows/healthweek-v05-final4.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: healthweek-v05-final4
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Android SDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+      - name: Reconstruct and patch source
+        id: src
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_COMMIT=78a52b468c295550a2f97f0ef3f0788907280c02
+          BASE_SHA=54a8c080e9e361f9cf3e09933244477423f89179c74ec5ba2b83dfa1b824a4ab
+          OVERLAY_SHA=a8cc35f2c86acb03f95b2988a9dc42757a677ca22ddbec6b6554bb2ef298affc
+          P="$RUNNER_TEMP/hw"; D="$RUNNER_TEMP/parts"; B="$RUNNER_TEMP/base.xz"; O="$RUNNER_TEMP/overlay.xz"
+          rm -rf "$P" "$D"; mkdir -p "$P" "$D"
+          for n in $(seq 0 99); do
+            q=$(printf '%03d' "$n"); u="https://raw.githubusercontent.com/CesarPetrescu/emptyrepo/$BASE_COMMIT/ci/healthweek-v04/source.xz.b64.$q"
+            curl -fsSL "$u" -o "$D/$q" || { rm -f "$D/$q"; break; }
+          done
+          cat "$D"/* | tr -d '\r\n\t ' | base64 -d > "$B"
+          echo "$BASE_SHA  $B" | sha256sum -c -
+          tar -xJf "$B" -C "$P"
+          cat ci/healthweek-v05-final/overlay.xz.b64.* | tr -d '\r\n\t ' | base64 -d > "$O"
+          echo "$OVERLAY_SHA  $O" | sha256sum -c -
+          tar -xJf "$O" -C "$P"
+
+          python3 - "$P" <<'PY'
+          from pathlib import Path
+          import json, sys
+          root=Path(sys.argv[1])
+
+          # Kotlin KDoc cannot contain slash-star because comments nest.
+          bridge=root/'app/src/main/java/com/photonspark/galaxyhealthweek/server/GlassesBridgeStore.kt'
+          s=bridge.read_text()
+          old='/api/v1/glasses/* routes'
+          if old not in s:
+              raise SystemExit('Expected glasses KDoc pattern not found')
+          bridge.write_text(s.replace(old, '/api/v1/glasses/ routes'))
+
+          # SDK 0.0.15 currently lacks the documented background helper exports.
+          main=root/'even-g2/src/main.ts'
+          s=main.read_text()
+          s=s.replace("import {\n  onBackgroundRestore,\n  setBackgroundState,\n  waitForEvenAppBridge,\n  type EvenAppBridge,\n  type EvenHubEvent,\n} from '@evenrealities/even_hub_sdk'", "import {\n  waitForEvenAppBridge,\n  type EvenAppBridge,\n  type EvenHubEvent,\n} from '@evenrealities/even_hub_sdk'\nimport * as EvenSdk from '@evenrealities/even_hub_sdk'")
+          start=s.find('// Even Hub migrates the plugin between foreground and headless WebViews.')
+          end=s.find("document.querySelector('#pair')", start)
+          if start < 0 or end < 0: raise SystemExit('G2 persistence block not found')
+          block=r'''// Background state persistence for Even Hub WebView migration.
+          type BackgroundApi = { setBackgroundState?: (key: string, exporter: () => Record<string, unknown>) => void; onBackgroundRestore?: (key: string, restorer: (saved: Record<string, unknown>) => void) => void }
+          type HostStateWindow = Window & { __getStateSnapshot?: () => string; __restoreState?: (snapshot: string) => void }
+          const exportRuntimeState = (): PersistedState => ({ pageIndex, data, etag, lastFetchAt, token: settings.token, clientId: settings.clientId })
+          function restoreRuntimeState(saved: Partial<PersistedState>) { pageIndex=normalizePage(saved.pageIndex ?? pageIndex); data=saved.data ?? data; etag=saved.etag ?? etag; lastFetchAt=saved.lastFetchAt ?? lastFetchAt; settings={...settings,token:saved.token ?? settings.token,clientId:saved.clientId ?? settings.clientId}; persistAll(); renderPhonePreview(); void renderGlasses() }
+          function registerBackgroundPersistence() {
+            const api=EvenSdk as unknown as BackgroundApi
+            if(api.setBackgroundState && api.onBackgroundRestore){ api.setBackgroundState(BACKGROUND_KEY,()=>({...exportRuntimeState()})); api.onBackgroundRestore(BACKGROUND_KEY,saved=>restoreRuntimeState(saved as Partial<PersistedState>)); return }
+            const host=window as HostStateWindow; const oldGet=host.__getStateSnapshot?.bind(host); const oldRestore=host.__restoreState?.bind(host)
+            host.__getStateSnapshot=()=>{ let r:Record<string,unknown>={}; if(oldGet){try{r={...(JSON.parse(oldGet()) as Record<string,unknown>)}}catch{}} r[BACKGROUND_KEY]=exportRuntimeState(); return JSON.stringify(r) }
+            host.__restoreState=snapshot=>{ oldRestore?.(snapshot); try{const r=JSON.parse(snapshot) as Record<string,unknown>; const saved=r[BACKGROUND_KEY]; if(saved&&typeof saved==='object') restoreRuntimeState(saved as Partial<PersistedState>)}catch{} }
+          }
+          registerBackgroundPersistence()
+
+          '''
+          main.write_text(s[:start]+block+s[end:])
+          manifest=root/'even-g2/app.json'; m=json.loads(manifest.read_text()); m['min_app_version']='2.2.10'; m['min_sdk_version']='0.0.15'; manifest.write_text(json.dumps(m,indent=2)+'\n')
+          PY
+          chmod +x "$P/gradlew"; rm -f "$P/even-g2/package-lock.json"
+          echo "project=$P" >> "$GITHUB_OUTPUT"
+      - name: Restore Samsung AAR
+        env:
+          P: ${{ steps.src.outputs.project }}
+        run: |
+          mkdir -p "$P/app/libs"
+          curl -fL --retry 4 -o "$P/app/libs/samsung-health-data-api-1.1.0.aar" https://raw.githubusercontent.com/S108-Sleeper/Sleeper_APP/b15fa77b9f296bb1c9e50ee54f786d11b67fdd0b/App/core/samsung-health/libs/samsung-health-data-api-1.1.0.aar
+          echo 'f5d3d83cf00b97d0bb1b1db4da076e861eb1c3e6e704d89a34e68909d2f38654  '"$P/app/libs/samsung-health-data-api-1.1.0.aar" | sha256sum -c -
+      - name: Build G2
+        env:
+          P: ${{ steps.src.outputs.project }}
+        run: |
+          cd "$P/even-g2"; npm install --no-audit --no-fund; npm run build; npx evenhub pack app.json dist --sdk-ver 0.0.15 -o HealthWeek-G2-v0.5.0.ehpk
+      - name: Test lint and build Android
+        env:
+          P: ${{ steps.src.outputs.project }}
+        run: |
+          cd "$P"; ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease :wear:lintRelease :wear:assembleRelease --stacktrace --no-daemon
+      - name: Package
+        id: pkg
+        env:
+          P: ${{ steps.src.outputs.project }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          O="$RUNNER_TEMP/out"; rm -rf "$O"; mkdir -p "$O/install" "$O/desktop" "$O/source" "$O/docs" "$O/validation"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          A=$(find "$P/app/build/outputs/apk/release" -type f -name '*.apk' | head -1); W=$(find "$P/wear/build/outputs/apk/release" -type f -name '*.apk' | head -1)
+          "$BT/zipalign" -p -f 4 "$A" "$O/install/HealthWeek-v0.5.0-unsigned.apk"; "$BT/zipalign" -p -f 4 "$W" "$O/install/HealthWeek-Wear-v0.5.0-unsigned.apk"
+          "$BT/zipalign" -c -v 4 "$O/install/HealthWeek-v0.5.0-unsigned.apk" > "$O/validation/phone-zipalign.txt"; "$BT/zipalign" -c -v 4 "$O/install/HealthWeek-Wear-v0.5.0-unsigned.apk" > "$O/validation/watch-zipalign.txt"
+          "$BT/aapt" dump badging "$O/install/HealthWeek-v0.5.0-unsigned.apk" > "$O/validation/phone-badging.txt"; "$BT/aapt" dump badging "$O/install/HealthWeek-Wear-v0.5.0-unsigned.apk" > "$O/validation/watch-badging.txt"
+          cp "$P/even-g2/HealthWeek-G2-v0.5.0.ehpk" "$O/install/"; (cd "$P/desktop-pwa" && zip -qr "$O/desktop/HealthWeek-Desktop-PWA-v0.5.0.zip" .)
+          cp "$P/README.md" "$O/docs/"; cp -r "$P/docs/." "$O/docs/"; cp "$BT/zipalign" "$O/validation/"; cp "$BT/lib/apksigner.jar" "$O/validation/"
+          cp "$P/app/build/reports/lint-results-release.html" "$O/validation/phone-lint.html" || true; cp "$P/wear/build/reports/lint-results-release.html" "$O/validation/watch-lint.html" || true; cp -r "$P/app/build/reports/tests/testDebugUnitTest" "$O/validation/unit-tests" || true
+          rm -f "$P/app/libs/samsung-health-data-api-1.1.0.aar" "$P/signing.properties"; rm -rf "$P/app/build" "$P/wear/build" "$P/.gradle" "$P/.kotlin" "$P/even-g2/node_modules" "$P/even-g2/dist"; rm -f "$P/even-g2/HealthWeek-G2-v0.5.0.ehpk"
+          (cd "$P" && zip -qr "$O/source/HealthWeek-v0.5.0-source.zip" . -x '*.jks' '*.keystore' '*.p12')
+          find "$O" -type f -print0 | sort -z | xargs -0 sha256sum > "$O/SHA256SUMS.txt"; (cd "$O" && zip -qr "$RUNNER_TEMP/HealthWeek-v0.5.0-unsigned-all-in-one.zip" .)
+          echo "out=$O" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HealthWeek-v0.5.0-unsigned-all-in-one-final4
+          path: |
+            ${{ steps.pkg.outputs.out }}/**
+            ${{ runner.temp }}/HealthWeek-v0.5.0-unsigned-all-in-one.zip
+          retention-days: 7
+          if-no-files-found: error
