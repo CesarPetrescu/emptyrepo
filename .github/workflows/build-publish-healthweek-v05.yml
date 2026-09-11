@@ -1,0 +1,325 @@
+name: Build and publish Health Week v0.5
+
+on:
+  push:
+    branches:
+      - healthweek-v05-ci
+    paths:
+      - 'ci/healthweek-v05/BUILD'
+      - '.github/workflows/build-publish-healthweek-v05.yml'
+  pull_request:
+    paths:
+      - 'ci/healthweek-v05/**'
+      - '.github/workflows/build-publish-healthweek-v05.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: healthweek-v05-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout archive branch
+        uses: actions/checkout@v4
+        with:
+          ref: healthweek-v05-ci
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Reconstruct v0.5 source
+        id: reconstruct
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT="$RUNNER_TEMP/healthweek-v05"
+          ARCHIVE="$RUNNER_TEMP/HealthWeek-v0.5.0-source.tar.xz"
+          rm -rf "$PROJECT"
+          mkdir -p "$PROJECT"
+
+          mapfile -t PARTS < <(find ci/healthweek-v05 -maxdepth 1 -type f -name 'source.xz.b64.*' | sort)
+          test "${#PARTS[@]}" -gt 0
+          cat "${PARTS[@]}" | tr -d '\r\n\t ' | base64 --decode > "$ARCHIVE"
+          test -s "$ARCHIVE"
+          tar -tJf "$ARCHIVE" >/dev/null
+          tar -xJf "$ARCHIVE" -C "$PROJECT"
+
+          # Allow either a direct project root or one enclosing directory.
+          if [[ ! -f "$PROJECT/settings.gradle.kts" ]]; then
+            ROOT="$(find "$PROJECT" -mindepth 2 -maxdepth 3 -type f -name settings.gradle.kts -printf '%h\n' | head -1)"
+            test -n "$ROOT"
+            TMP="$RUNNER_TEMP/healthweek-v05-root"
+            rm -rf "$TMP"
+            mv "$ROOT" "$TMP"
+            rm -rf "$PROJECT"
+            mv "$TMP" "$PROJECT"
+          fi
+
+          chmod +x "$PROJECT/gradlew"
+          [[ -f "$PROJECT/desktop-pwa/run.sh" ]] && chmod +x "$PROJECT/desktop-pwa/run.sh"
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Normalize v0.5 metadata and Even manifest
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          import os
+
+          root = Path(os.environ['PROJECT'])
+
+          app_gradle = root / 'app/build.gradle.kts'
+          if app_gradle.exists():
+              s = app_gradle.read_text()
+              s = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 5', s)
+              s = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "0.5.0"', s)
+              app_gradle.write_text(s)
+
+          wear_gradle = root / 'wear/build.gradle.kts'
+          if wear_gradle.exists():
+              s = wear_gradle.read_text()
+              s = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 5', s)
+              s = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "0.5.0"', s)
+              wear_gradle.write_text(s)
+
+          pkg = root / 'even-g2/package.json'
+          if pkg.exists():
+              data = json.loads(pkg.read_text())
+              data['version'] = '0.5.0'
+              deps = data.setdefault('dependencies', {})
+              dev = data.setdefault('devDependencies', {})
+              deps['@evenrealities/even_hub_sdk'] = '0.0.15'
+              dev['@evenrealities/evenhub-cli'] = '0.1.14'
+              pkg.write_text(json.dumps(data, indent=2) + '\n')
+
+          app_json = root / 'even-g2/app.json'
+          if app_json.exists():
+              data = json.loads(app_json.read_text())
+              data['version'] = '0.5.0'
+              data['min_sdk_version'] = '0.0.15'
+              data['entrypoint'] = 'index.html'
+              data['permissions'] = [{
+                  'name': 'network',
+                  'desc': 'Read the private Health Week glasses summary from the companion app on this phone.',
+                  'whitelist': ['http://127.0.0.1:8765']
+              }]
+              data['supported_languages'] = ['en']
+              app_json.write_text(json.dumps(data, indent=2) + '\n')
+
+          # Kotlin 2.x prohibits callable references to member extension methods.
+          for p in root.rglob('*.kt'):
+              s = p.read_text()
+              s2 = re.sub(r'\.map\(DailyHealth::toSummaryDto\)', '.map { it.toSummaryDto() }', s)
+              s2 = re.sub(r'\.map\(DailyHealth::toDto\)', '.map { it.toDto() }', s2)
+              if s2 != s:
+                  p.write_text(s2)
+          PY
+
+      - name: Restore pinned Samsung Health Data SDK AAR
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROJECT/app/libs"
+          curl --fail --location --retry 4 --retry-all-errors \
+            -o "$PROJECT/app/libs/samsung-health-data-api-1.1.0.aar" \
+            https://raw.githubusercontent.com/S108-Sleeper/Sleeper_APP/b15fa77b9f296bb1c9e50ee54f786d11b67fdd0b/App/core/samsung-health/libs/samsung-health-data-api-1.1.0.aar
+          echo 'f5d3d83cf00b97d0bb1b1db4da076e861eb1c3e6e704d89a34e68909d2f38654  '"$PROJECT/app/libs/samsung-health-data-api-1.1.0.aar" | sha256sum --check --strict -
+
+      - name: Build and package Even G2 app
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT/even-g2"
+          npm install --no-audit --no-fund
+          npm run build
+          npx evenhub pack app.json dist --sdk-ver 0.0.15 -o HealthWeek-G2-v0.5.0.ehpk
+          test -s HealthWeek-G2-v0.5.0.ehpk
+
+      - name: Validate web clients
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          [[ -f "$PROJECT/app/src/main/assets/web/assets/app.js" ]] && node --check "$PROJECT/app/src/main/assets/web/assets/app.js"
+          [[ -f "$PROJECT/desktop-pwa/assets/app.js" ]] && node --check "$PROJECT/desktop-pwa/assets/app.js"
+
+      - name: Test, lint, and build Android targets
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT"
+          TASKS=(":app:testDebugUnitTest" ":app:lintRelease" ":app:assembleRelease")
+          if grep -qE 'include\([^)]*["'"']?:wear' settings.gradle.kts || [[ -d wear ]]; then
+            TASKS+=(":wear:lintRelease" ":wear:assembleRelease")
+          fi
+          ./gradlew "${TASKS[@]}" --stacktrace --no-daemon
+
+      - name: Package all outputs
+        id: package
+        shell: bash
+        env:
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/HealthWeek-v0.5.0-all"
+          rm -rf "$OUT"
+          mkdir -p "$OUT/install" "$OUT/desktop" "$OUT/source" "$OUT/docs" "$OUT/validation"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+
+          PHONE="$(find "$PROJECT/app/build/outputs/apk/release" -maxdepth 1 -type f -name '*.apk' | head -1)"
+          test -f "$PHONE"
+          "$BT/zipalign" -p -f 4 "$PHONE" "$OUT/install/HealthWeek-v0.5.0-unsigned.apk"
+          "$BT/zipalign" -c -v 4 "$OUT/install/HealthWeek-v0.5.0-unsigned.apk" > "$OUT/validation/phone-zipalign.txt"
+          "$BT/aapt" dump badging "$OUT/install/HealthWeek-v0.5.0-unsigned.apk" > "$OUT/validation/phone-aapt-badging.txt"
+          unzip -t "$OUT/install/HealthWeek-v0.5.0-unsigned.apk" > "$OUT/validation/phone-zip-integrity.txt"
+
+          if [[ -d "$PROJECT/wear/build/outputs/apk/release" ]]; then
+            WATCH="$(find "$PROJECT/wear/build/outputs/apk/release" -maxdepth 1 -type f -name '*.apk' | head -1 || true)"
+            if [[ -n "$WATCH" && -f "$WATCH" ]]; then
+              "$BT/zipalign" -p -f 4 "$WATCH" "$OUT/install/HealthWeek-Wear-v0.5.0-unsigned.apk"
+              "$BT/zipalign" -c -v 4 "$OUT/install/HealthWeek-Wear-v0.5.0-unsigned.apk" > "$OUT/validation/watch-zipalign.txt"
+              "$BT/aapt" dump badging "$OUT/install/HealthWeek-Wear-v0.5.0-unsigned.apk" > "$OUT/validation/watch-aapt-badging.txt"
+              unzip -t "$OUT/install/HealthWeek-Wear-v0.5.0-unsigned.apk" > "$OUT/validation/watch-zip-integrity.txt"
+            fi
+          fi
+
+          cp "$PROJECT/even-g2/HealthWeek-G2-v0.5.0.ehpk" "$OUT/install/"
+          if [[ -d "$PROJECT/desktop-pwa" ]]; then
+            (cd "$PROJECT/desktop-pwa" && zip -qr "$OUT/desktop/HealthWeek-Desktop-PWA-v0.5.0.zip" .)
+          fi
+
+          rm -f "$PROJECT/app/libs/samsung-health-data-api-1.1.0.aar"
+          (cd "$PROJECT" && zip -qr "$OUT/source/HealthWeek-v0.5.0-source.zip" . \
+            -x 'app/build/*' 'wear/build/*' '.gradle/*' '.kotlin/*' \
+               'even-g2/node_modules/*' 'even-g2/dist/*' 'even-g2/*.ehpk' \
+               'signing.properties' '*.p12' '*.jks' '*.keystore')
+
+          cat > "$OUT/README-FIRST.md" <<'EOF'
+          # Health Week v0.5.0
+
+          This bundle contains the Android Samsung Health companion, the Even Realities G2 Even Hub app, the Wear OS companion when present, the desktop PWA, full source, checksums, and CI validation output.
+
+          The phone companion is the authoritative health-data host. The G2 application runs inside the Even app WebView and reads only a scoped summary from `http://127.0.0.1:8765/api/v1/glasses/snapshot`.
+
+          Android APKs in this CI bundle are unsigned. Use the same private signing key as v0.4.0 before installing as an update.
+          EOF
+
+          cp "$PROJECT/README.md" "$OUT/docs/PROJECT-README.md" 2>/dev/null || true
+          find "$PROJECT" -maxdepth 3 -type f \( -iname '*setup*.md' -o -iname '*security*.md' -o -iname '*api*.md' -o -iname '*g2*.md' -o -iname '*test*.md' \) -exec cp -t "$OUT/docs" {} + 2>/dev/null || true
+          cp "$PROJECT/app/build/reports/lint-results-release.html" "$OUT/validation/phone-lint.html" 2>/dev/null || true
+          cp -r "$PROJECT/app/build/reports/tests/testDebugUnitTest" "$OUT/validation/phone-unit-tests" 2>/dev/null || true
+          cp "$PROJECT/wear/build/reports/lint-results-release.html" "$OUT/validation/watch-lint.html" 2>/dev/null || true
+          cp "$BT/zipalign" "$OUT/validation/zipalign"
+          cp "$BT/lib/apksigner.jar" "$OUT/validation/apksigner.jar"
+
+          find "$OUT" -type f -print0 | sort -z | xargs -0 sha256sum > "$OUT/SHA256SUMS.txt"
+          BUNDLE="$RUNNER_TEMP/HealthWeek-v0.5.0-unsigned-all-in-one.zip"
+          (cd "$OUT" && zip -qr "$BUNDLE" .)
+          unzip -t "$BUNDLE" >/dev/null
+          sha256sum "$BUNDLE" > "$RUNNER_TEMP/HealthWeek-v0.5.0-unsigned-all-in-one.zip.sha256"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload CI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthWeek-v0.5.0-unsigned-all-in-one
+          path: |
+            ${{ steps.package.outputs.out }}/**
+            ${{ steps.package.outputs.bundle }}
+            ${{ steps.package.outputs.bundle }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish source branch and GitHub release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT: ${{ steps.reconstruct.outputs.project }}
+          BUNDLE: ${{ steps.package.outputs.bundle }}
+        run: |
+          set -euo pipefail
+
+          # Create a browsable source branch without the proprietary Samsung AAR.
+          WORK="$RUNNER_TEMP/healthweek-v05-source-branch"
+          rm -rf "$WORK"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$WORK"
+          cd "$WORK"
+          git checkout --orphan healthweek-v05-source
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -a "$PROJECT"/. .
+          rm -rf app/build wear/build .gradle .kotlin even-g2/node_modules even-g2/dist
+          rm -f app/libs/samsung-health-data-api-1.1.0.aar signing.properties *.p12 *.jks *.keystore
+          cat > .gitignore <<'EOF'
+          .gradle/
+          .kotlin/
+          **/build/
+          local.properties
+          app/libs/*.aar
+          signing.properties
+          *.jks
+          *.keystore
+          *.p12
+          even-g2/node_modules/
+          even-g2/dist/
+          even-g2/*.ehpk
+          EOF
+          git add -A
+          git -c user.name='healthweek-ci' -c user.email='actions@users.noreply.github.com' commit -m 'Health Week v0.5.0 source'
+          git push --force origin HEAD:healthweek-v05-source
+
+          # Public, temporary release assets make the build retrievable without Actions auth.
+          cd "$RUNNER_TEMP"
+          cp "$PROJECT/even-g2/HealthWeek-G2-v0.5.0.ehpk" .
+          cp "$PROJECT/app/build/outputs/apk/release/"*.apk HealthWeek-v0.5.0-unsigned.apk
+          if compgen -G "$PROJECT/wear/build/outputs/apk/release/*.apk" >/dev/null; then
+            cp "$PROJECT/wear/build/outputs/apk/release/"*.apk HealthWeek-Wear-v0.5.0-unsigned.apk
+          fi
+          cp "$PROJECT/../HealthWeek-v0.5.0-source.tar.xz" . 2>/dev/null || true
+          cp "$PROJECT/README.md" HealthWeek-v0.5.0-README.md 2>/dev/null || true
+          gh release delete healthweek-v0.5.0 --cleanup-tag -y >/dev/null 2>&1 || true
+          ASSETS=("$BUNDLE" "HealthWeek-G2-v0.5.0.ehpk" "HealthWeek-v0.5.0-unsigned.apk")
+          [[ -f HealthWeek-Wear-v0.5.0-unsigned.apk ]] && ASSETS+=("HealthWeek-Wear-v0.5.0-unsigned.apk")
+          [[ -f HealthWeek-v0.5.0-README.md ]] && ASSETS+=("HealthWeek-v0.5.0-README.md")
+          gh release create healthweek-v0.5.0 "${ASSETS[@]}" \
+            --title 'Health Week v0.5.0' \
+            --notes 'Private health companion and Even Realities G2 bridge. CI assets are unsigned; use the existing private release key for Android updates.'
