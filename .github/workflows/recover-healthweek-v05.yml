@@ -1,0 +1,40 @@
+name: Recover Health Week v0.5 source
+
+on:
+  pull_request:
+    paths:
+      - 'ci/healthweek-v05/**'
+      - '.github/workflows/recover-healthweek-v05.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode and validate source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/source
+          cat ci/healthweek-v05/source.xz.b64.* \
+            | tr -d '\r\n\t ' \
+            | base64 --decode \
+            > out/HealthWeek-v0.5.0-source.tar.xz
+          tar -tJf out/HealthWeek-v0.5.0-source.tar.xz >/dev/null
+          tar -xJf out/HealthWeek-v0.5.0-source.tar.xz -C out/source
+          (cd out/source && zip -qr ../HealthWeek-v0.5.0-source.zip .)
+          sha256sum out/HealthWeek-v0.5.0-source.tar.xz out/HealthWeek-v0.5.0-source.zip \
+            > out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HealthWeek-v0.5.0-recovered-source
+          path: |
+            out/HealthWeek-v0.5.0-source.tar.xz
+            out/HealthWeek-v0.5.0-source.zip
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 1
